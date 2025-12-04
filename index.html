@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BIM Bauphasen-Viewer | CesiumJS</title>
+  
+  <!-- CesiumJS -->
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.121/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.121/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+  
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    
+    #cesiumContainer {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    
+    /* Loading Overlay */
+    #loadingOverlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      transition: opacity 0.5s ease, visibility 0.5s ease;
+    }
+    
+    #loadingOverlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+    }
+    
+    .loader {
+      width: 60px;
+      height: 60px;
+      border: 4px solid rgba(255, 255, 255, 0.1);
+      border-top-color: #4CAF50;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    
+    .loading-text {
+      color: white;
+      margin-top: 20px;
+      font-size: 16px;
+      letter-spacing: 1px;
+    }
+    
+    .loading-subtitle {
+      color: rgba(255, 255, 255, 0.6);
+      margin-top: 8px;
+      font-size: 12px;
+    }
+    
+    /* Header Bar */
+    #headerBar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 50px;
+      background: rgba(20, 20, 30, 0.9);
+      backdrop-filter: blur(10px);
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      z-index: 50;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: white;
+      font-weight: 600;
+      font-size: 16px;
+    }
+    
+    .logo-icon {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #4CAF50, #2196F3);
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+    
+    .header-info {
+      margin-left: auto;
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 12px;
+    }
+    
+    /* Cesium Widget Adjustments */
+    .cesium-viewer-bottom {
+      display: none !important;
+    }
+    
+    .cesium-viewer {
+      top: 50px !important;
+      height: calc(100% - 50px) !important;
+    }
+  </style>
+</head>
+<body>
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay">
+    <div class="loader"></div>
+    <div class="loading-text">BIM Viewer wird geladen...</div>
+    <div class="loading-subtitle">Initialisiere CesiumJS und 3D-Tileset</div>
+  </div>
+  
+  <!-- Header -->
+  <div id="headerBar">
+    <div class="logo">
+      <div class="logo-icon">🏗️</div>
+      <span>BIM Bauphasen-Viewer</span>
+    </div>
+    <div class="header-info">
+      Powered by CesiumJS
+    </div>
+  </div>
+  
+  <!-- Cesium Container -->
+  <div id="cesiumContainer"></div>
+  
+  <script>
+    // Grant CesiumJS access to your ion assets
+    Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI2NTY4OWFmYy05NzI4LTQ4ZWEtODc5Yi0zYWQ2Njg5ZDFiMTgiLCJpZCI6MjYzNTkwLCJpYXQiOjE3NTIyNTM2MzZ9.ie5CjK4mgkYmOOdiJp-Zwdy_biqwWXFAVOeD3Fx6_Ro";
+
+    // Globale Variablen
+    let viewer = null;
+    let animationInterval = null;
+    let tileset = null;
+    let activeStages = new Set([1, 2, 3, 4, 5, 6, 7, 8]);
+    let animationStage = 0;
+
+    // Bauteil-gerechte Farbpalette
+    const MATERIAL_COLORS = {
+      1: 'rgb(89, 79, 69)',     // Fundament - Beton dunkel
+      2: 'rgb(140, 140, 145)',  // Bodenplatte - Beton hell
+      3: 'rgb(183, 183, 183)',  // Stützen EG - Grau
+      4: 'rgb(150, 150, 155)',  // Geschossdecke 1.OG
+      5: 'rgb(183, 183, 183)',  // Stützen 1.OG
+      6: 'rgb(150, 150, 155)',  // Geschossdecke 2.OG
+      7: 'rgb(183, 183, 183)',  // Stützen 2.OG
+      8: 'rgb(45, 45, 50)',     // Flachdach - Dunkel
+      0: 'rgb(220, 220, 220)'   // Default
+    };
+
+    const HIGHLIGHT_COLORS = {
+      1: 'rgb(220, 38, 127)',   // Pink
+      2: 'rgb(255, 140, 0)',    // Orange
+      3: 'rgb(255, 215, 0)',    // Gold
+      4: 'rgb(50, 205, 50)',    // Grün
+      5: 'rgb(0, 191, 255)',    // Hellblau
+      6: 'rgb(65, 105, 225)',   // Königsblau
+      7: 'rgb(138, 43, 226)',   // Violett
+      8: 'rgb(255, 20, 147)',   // Deep Pink
+      0: 'rgb(200, 200, 200)'   // Default
+    };
+
+    const stageNames = {
+      1: 'Fundamente',
+      2: 'Widerlager',
+      3: 'Längsträger',
+      4: 'Ortbetonplatte',
+      5: '-',
+      6: 'Asphaltdecke',
+      7: 'Geländer',
+      8: 'Schwelle'
+    };
+
+    // Kompakte Legende
+    function createCompactLegend() {
+      const legendHtml = `
+        <div id="legend" style="
+          position: absolute;
+          top: 60px;
+          right: 10px;
+          background: rgba(42, 42, 42, 0.95);
+          padding: 12px;
+          border-radius: 8px;
+          color: white;
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          font-size: 13px;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+          z-index: 100;
+          width: 280px;
+          max-height: calc(100vh - 80px);
+          overflow-y: auto;
+          border: 1px solid rgba(255, 255, 255, 0.1);
+        ">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #555;">
+            <h3 style="margin: 0; font-size: 14px; font-weight: 600;">🏗️ Bauphasen-Kontrolle</h3>
+            <button id="toggleCollapse" style="
+              background: transparent;
+              border: none;
+              color: white;
+              cursor: pointer;
+              font-size: 18px;
+              padding: 0;
+              width: 24px;
+              height: 24px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              transition: transform 0.2s;
+            ">▼</button>
+          </div>
+          
+          <div id="legendContent">
+            <!-- Stage Controls -->
+            <div style="margin-bottom: 12px;">
+              <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+                <button id="selectAll" class="ctrl-btn">Alle an</button>
+                <button id="selectNone" class="ctrl-btn">Alle aus</button>
+                <button id="toggleColors" class="ctrl-btn">🎨 Farben</button>
+              </div>
+            </div>
+            
+            <!-- Stage List -->
+            <div id="stageList" style="margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid #555;">
+              ${Object.entries(stageNames).map(([stage, name]) => `
+                <div style="display: flex; align-items: center; margin-bottom: 4px; padding: 5px; border-radius: 4px; transition: background 0.2s; cursor: pointer;" 
+                     class="stage-item" data-stage="${stage}">
+                  <input type="checkbox" id="stage${stage}" checked style="margin-right: 8px; cursor: pointer; accent-color: #4CAF50;">
+                  <div class="color-box" style="
+                    width: 18px; 
+                    height: 18px; 
+                    background: ${MATERIAL_COLORS[stage]}; 
+                    margin-right: 10px; 
+                    border: 1px solid rgba(255,255,255,0.3);
+                    border-radius: 3px;
+                    flex-shrink: 0;
+                  "></div>
+                  <label for="stage${stage}" style="cursor: pointer; flex: 1; font-size: 12px; user-select: none;">
+                    <strong style="color: #4CAF50;">Stage ${stage}:</strong> ${name}
+                  </label>
+                </div>
+              `).join('')}
+            </div>
+            
+            <!-- Animation Controls -->
+            <div style="padding-top: 10px;">
+              <div style="display: flex; gap: 6px; margin-bottom: 10px;">
+                <button id="playAnimation" style="
+                  flex: 1;
+                  background: linear-gradient(135deg, #4CAF50, #45a049);
+                  color: white;
+                  border: none;
+                  padding: 8px;
+                  border-radius: 4px;
+                  cursor: pointer;
+                  font-size: 12px;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  gap: 6px;
+                  font-weight: 500;
+                  transition: all 0.2s;
+                ">
+                  <span>▶</span>
+                  <span>Animation</span>
+                </button>
+                <button id="resetAnimation" style="
+                  flex: 1;
+                  background: linear-gradient(135deg, #2196F3, #1976D2);
+                  color: white;
+                  border: none;
+                  padding: 8px;
+                  border-radius: 4px;
+                  cursor: pointer;
+                  font-size: 12px;
+                  font-weight: 500;
+                  transition: all 0.2s;
+                ">↺ Reset</button>
+              </div>
+              
+              <div style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #aaa;">
+                <span>Speed:</span>
+                <input type="range" id="animSpeed" min="500" max="3000" value="1500" step="250" style="
+                  flex: 1;
+                  accent-color: #4CAF50;
+                  cursor: pointer;
+                ">
+                <span id="speedValue" style="min-width: 35px; text-align: right;">1.5s</span>
+              </div>
+            </div>
+            
+            <div id="infoText" style="
+              margin-top: 12px;
+              padding-top: 10px;
+              border-top: 1px solid #555;
+              font-size: 11px;
+              color: #888;
+              text-align: center;
+            ">
+              <span id="activeCount">8 von 8 Stages aktiv</span>
+            </div>
+          </div>
+        </div>
+        
+        <style>
+          .ctrl-btn {
+            flex: 1;
+            background: #3a3a3a;
+            color: white;
+            border: 1px solid #555;
+            padding: 6px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.2s;
+          }
+          .ctrl-btn:hover {
+            background: #4a4a4a;
+            border-color: #666;
+          }
+          .stage-item:hover {
+            background: rgba(255,255,255,0.08) !important;
+          }
+          #playAnimation:hover, #resetAnimation:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+          }
+          #legend::-webkit-scrollbar {
+            width: 6px;
+          }
+          #legend::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.05);
+            border-radius: 3px;
+          }
+          #legend::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.2);
+            border-radius: 3px;
+          }
+          #legend::-webkit-scrollbar-thumb:hover {
+            background: rgba(255,255,255,0.3);
+          }
+        </style>
+      `;
+      
+      document.body.insertAdjacentHTML('beforeend', legendHtml);
+      setupEventListeners();
+    }
+
+    // Event Listeners Setup
+    function setupEventListeners() {
+      // Collapse/Expand
+      const toggleBtn = document.getElementById('toggleCollapse');
+      const content = document.getElementById('legendContent');
+      let isCollapsed = false;
+      
+      toggleBtn.addEventListener('click', () => {
+        isCollapsed = !isCollapsed;
+        content.style.display = isCollapsed ? 'none' : 'block';
+        toggleBtn.textContent = isCollapsed ? '▶' : '▼';
+        toggleBtn.style.transform = isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
+      });
+      
+      // Stage Checkboxes
+      Object.keys(stageNames).forEach(stage => {
+        const checkbox = document.getElementById(`stage${stage}`);
+        const stageItem = checkbox.closest('.stage-item');
+        
+        checkbox.addEventListener('change', (e) => {
+          if (e.target.checked) {
+            activeStages.add(parseInt(stage));
+          } else {
+            activeStages.delete(parseInt(stage));
+          }
+          updateVisualization();
+          updateActiveCount();
+        });
+        
+        // Click on entire row toggles checkbox
+        stageItem.addEventListener('click', (e) => {
+          if (e.target !== checkbox) {
+            checkbox.checked = !checkbox.checked;
+            checkbox.dispatchEvent(new Event('change'));
+          }
+        });
+      });
+      
+      // Select All/None
+      document.getElementById('selectAll').addEventListener('click', () => {
+        Object.keys(stageNames).forEach(stage => {
+          document.getElementById(`stage${stage}`).checked = true;
+          activeStages.add(parseInt(stage));
+        });
+        updateVisualization();
+        updateActiveCount();
+      });
+      
+      document.getElementById('selectNone').addEventListener('click', () => {
+        Object.keys(stageNames).forEach(stage => {
+          document.getElementById(`stage${stage}`).checked = false;
+          activeStages.delete(parseInt(stage));
+        });
+        updateVisualization();
+        updateActiveCount();
+      });
+      
+      // Toggle Colors
+      let useHighlight = false;
+      const toggleColorsBtn = document.getElementById('toggleColors');
+      toggleColorsBtn.addEventListener('click', function() {
+        useHighlight = !useHighlight;
+        this.style.background = useHighlight ? 'linear-gradient(135deg, #ff6b35, #f7931e)' : '#3a3a3a';
+        this.style.borderColor = useHighlight ? '#ff6b35' : '#555';
+        
+        document.querySelectorAll('.color-box').forEach((box, index) => {
+          const stage = index + 1;
+          box.style.background = useHighlight ? HIGHLIGHT_COLORS[stage] : MATERIAL_COLORS[stage];
+        });
+        
+        updateVisualization();
+      });
+      
+      // Animation Controls
+      const playBtn = document.getElementById('playAnimation');
+      playBtn.addEventListener('click', () => {
+        if (animationInterval) {
+          stopAnimation();
+        } else {
+          startAnimation();
+        }
+      });
+      
+      document.getElementById('resetAnimation').addEventListener('click', () => {
+        stopAnimation();
+        Object.keys(stageNames).forEach(stage => {
+          document.getElementById(`stage${stage}`).checked = true;
+          activeStages.add(parseInt(stage));
+        });
+        updateVisualization();
+        updateActiveCount();
+      });
+      
+      // Animation Speed
+      const speedSlider = document.getElementById('animSpeed');
+      const speedValue = document.getElementById('speedValue');
+      speedSlider.addEventListener('input', (e) => {
+        const speed = e.target.value / 1000;
+        speedValue.textContent = `${speed}s`;
+        
+        if (animationInterval) {
+          stopAnimation();
+          startAnimation();
+        }
+      });
+    }
+
+    // Update active count
+    function updateActiveCount() {
+      const count = activeStages.size;
+      document.getElementById('activeCount').textContent = `${count} von 8 Stages aktiv`;
+    }
+
+    // Update visualization
+    function updateVisualization() {
+      if (!tileset) return;
+      
+      const toggleColorsBtn = document.getElementById('toggleColors');
+      const useHighlight = toggleColorsBtn && toggleColorsBtn.style.background.includes('ff6b35');
+      const colors = useHighlight ? HIGHLIGHT_COLORS : MATERIAL_COLORS;
+      
+      if (activeStages.size === 0) {
+        tileset.style = new Cesium.Cesium3DTileStyle({
+          show: false
+        });
+      } else {
+        const showConditions = Array.from(activeStages)
+          .map(stage => `\${iFCPropertiesStage} === ${stage}`)
+          .join(' || ');
+        
+        const colorConditions = Object.keys(stageNames).map(stage => [
+          `\${iFCPropertiesStage} === ${stage}`,
+          `color('${colors[stage]}', 1.0)`
+        ]);
+        colorConditions.push(["true", `color('${colors[0]}', 1.0)`]);
+        
+        tileset.style = new Cesium.Cesium3DTileStyle({
+          show: showConditions || false,
+          color: {
+            conditions: colorConditions
+          }
+        });
+      }
+    }
+
+    // Animation functions
+    function startAnimation() {
+      const playBtn = document.getElementById('playAnimation');
+      const speedSlider = document.getElementById('animSpeed');
+      
+      playBtn.innerHTML = '<span>⏸</span><span>Pause</span>';
+      playBtn.style.background = 'linear-gradient(135deg, #f44336, #d32f2f)';
+      
+      animationStage = 0;
+      const stages = [1, 2, 3, 4, 5, 6, 7, 8];
+      
+      Object.keys(stageNames).forEach(stage => {
+        document.getElementById(`stage${stage}`).checked = false;
+        activeStages.delete(parseInt(stage));
+      });
+      updateVisualization();
+      
+      animationInterval = setInterval(() => {
+        if (animationStage < stages.length) {
+          const stage = stages[animationStage];
+          document.getElementById(`stage${stage}`).checked = true;
+          activeStages.add(stage);
+          updateVisualization();
+          updateActiveCount();
+          animationStage++;
+        } else {
+          setTimeout(() => {
+            Object.keys(stageNames).forEach(stage => {
+              document.getElementById(`stage${stage}`).checked = false;
+              activeStages.delete(parseInt(stage));
+            });
+            updateVisualization();
+            updateActiveCount();
+            animationStage = 0;
+          }, parseInt(speedSlider.value));
+        }
+      }, parseInt(speedSlider.value));
+    }
+
+    function stopAnimation() {
+      if (animationInterval) {
+        clearInterval(animationInterval);
+        animationInterval = null;
+        const playBtn = document.getElementById('playAnimation');
+        playBtn.innerHTML = '<span>▶</span><span>Animation</span>';
+        playBtn.style.background = 'linear-gradient(135deg, #4CAF50, #45a049)';
+      }
+    }
+
+    // Main initialization
+    async function initialize() {
+      const loadingOverlay = document.getElementById('loadingOverlay');
+      
+      try {
+        // Create Viewer
+        viewer = new Cesium.Viewer("cesiumContainer", {
+          terrainProvider: await Cesium.CesiumTerrainProvider.fromIonAssetId(1),
+        });
+
+        viewer.scene.globe.depthTestAgainstTerrain = true;
+        
+        // Load tileset
+        tileset = await Cesium.Cesium3DTileset.fromIonAssetId(3715116);
+        viewer.scene.primitives.add(tileset);
+        
+        // Initial styling
+        const colorConditions = Object.keys(stageNames).map(stage => [
+          `\${iFCPropertiesStage} === ${stage}`,
+          `color('${MATERIAL_COLORS[stage]}', 1.0)`
+        ]);
+        colorConditions.push(["true", `color('${MATERIAL_COLORS[0]}', 1.0)`]);
+        
+        tileset.style = new Cesium.Cesium3DTileStyle({
+          color: {
+            conditions: colorConditions
+          },
+          show: true
+        });
+        
+        // Zoom to tileset
+        await viewer.zoomTo(tileset);
+        
+        // Create UI
+        createCompactLegend();
+        
+        // Hide loading overlay
+        loadingOverlay.classList.add('hidden');
+        
+        console.log("✅ BIM Viewer erfolgreich geladen");
+        
+      } catch (error) {
+        console.error("Fehler beim Laden:", error);
+        loadingOverlay.innerHTML = `
+          <div style="color: #f44336; font-size: 48px; margin-bottom: 20px;">⚠️</div>
+          <div class="loading-text" style="color: #f44336;">Fehler beim Laden</div>
+          <div class="loading-subtitle">${error.message}</div>
+          <button onclick="location.reload()" style="
+            margin-top: 20px;
+            padding: 10px 20px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+          ">Erneut versuchen</button>
+        `;
+      }
+    }
+
+    // Start when DOM is ready
+    document.addEventListener('DOMContentLoaded', initialize);
+  </script>
+</body>
+</html>
